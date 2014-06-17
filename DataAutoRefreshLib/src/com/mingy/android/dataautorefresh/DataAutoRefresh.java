@@ -1,5 +1,6 @@
-package com.yueke.dataautorefresh;
+package com.mingy.android.dataautorefresh;
 
+import java.io.File;
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Timer;
@@ -12,6 +13,7 @@ import android.database.ContentObserver;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Environment;
 import android.os.Handler;
 import android.provider.MediaStore;
 
@@ -39,6 +41,16 @@ public class DataAutoRefresh {
         mAutoRefreshListener = autoRefreshListener;
     }
     
+    // 不在本界面停止后台检索
+    public void onPause( ){
+        stopTimer( );
+    }
+    
+    // 返回界面恢复后台检索
+    public void onResume( ){
+        startCheckFileTimer( );
+    }
+    
     /**
      * 注销广播
      * 
@@ -49,20 +61,13 @@ public class DataAutoRefresh {
         }
         mContext.unregisterReceiver( mBroadcastReceiver );
         mContext.getContentResolver( ).unregisterContentObserver( mMediaStoreChangeObserver );
-        stopCheckFileTimer( );
-    }
-    
-    /**
-     * 得到变化的文件列表
-     * 
-     * */
-    public void getChangedFileList( ){
-        startCheckFileTimer( );
+        stopTimer( );
     }
     
     private void initDataAutoRefresh( ){
         startMediaFileListener( );
         observerMediaStoreChange( );
+        startCheckFileTimer( );
     }
     
     private void observerMediaStoreChange( ){
@@ -95,10 +100,9 @@ public class DataAutoRefresh {
                     mTimerWorking = false;
                     startCheckFileTimer( );
                 }else if( action.equals( Intent.ACTION_MEDIA_MOUNTED ) ){
-                    mTimerWorking = true;
-                    mAutoRefreshListener.onDataScan( );
+                    startSearchFileTimer( );
                 }else if( action.equals( Intent.ACTION_MEDIA_EJECT ) ){
-                    mAutoRefreshListener.onDataScan( );
+                    startSearchFileTimer( );
                 }
             }
         };
@@ -138,59 +142,26 @@ public class DataAutoRefresh {
         }
     }
     
-    /**
-     * 得到新增的文件列表
-     * 
-     * */
-    public ArrayList<String> getChangedFileList( Context context, String[] searchFileSuffix, ArrayList<String> existFileList ){
-        ArrayList<String> changedFileList = null;
-        if( null == context || null == searchFileSuffix ){
-            return changedFileList;
+    private void startSearchFileTimer( ){
+        if( mTimerWorking ){
+            return;
         }
         
-        ArrayList<String> supportFileList = getSupportFileList( context, searchFileSuffix );
-        changedFileList = getDifferentFileList( supportFileList, existFileList );
-        if( null == changedFileList || changedFileList.isEmpty( ) ){
-            changedFileList = null;
-        }
-        
-        return changedFileList;
+        mSearchFileTimer = new Timer( );
+        mSearchFileTimer.schedule( new SearchFileTimerTask( ), CHECK_FILE_TIME_LEN );
+        mTimerWorking = true;
     }
     
-    /**
-     * 获取新增的文件列表
-     * 
-     * */
-    private ArrayList<String> getDifferentFileList( ArrayList<String> newFileList, ArrayList<String> existFileList ){
-        ArrayList<String> differentFileList = null;
-        if( newFileList.isEmpty( ) ){
-            return differentFileList;
+    private void stopSearchFileTimer( ){
+        if( null != mCheckFileTimer ){
+            mCheckFileTimer.cancel( );
+            mCheckFileTimer = null;
         }
-        
-        differentFileList = new ArrayList<String>( );
-        boolean isExist = false;
-        if( null == existFileList ){
-            // 如果已存在文件为空，那肯定是全部加进来啦。
-            for( String newFilePath : newFileList ){
-                differentFileList.add( newFilePath );
-            }
-        }else{
-            for( String newFilePath : newFileList ){
-                isExist = false;
-                for( String existFilePath : existFileList ){
-                    if( existFilePath.equals( newFilePath ) ){
-                        isExist = true;
-                        break;
-                    }
-                }
-                
-                if( !isExist ){
-                    differentFileList.add( newFilePath );
-                }
-            }
-        }
-        
-        return differentFileList;
+    }
+    
+    private void stopTimer( ){
+        stopCheckFileTimer( );
+        stopSearchFileTimer( );
     }
     
     /**
@@ -215,7 +186,7 @@ public class DataAutoRefresh {
         searchFileList = new ArrayList<String>();
         Uri uri = MediaStore.Files.getContentUri("external");
         Cursor cursor = context.getContentResolver().query(
-                uri, new String[] { MediaStore.Files.FileColumns.DATA, MediaStore.Files.FileColumns.SIZE, MediaStore.Files.FileColumns._ID },
+                uri, new String[] { MediaStore.Files.FileColumns.DATA },
                 searchPath, null, null);
         
         String filepath = null;
@@ -249,9 +220,9 @@ public class DataAutoRefresh {
     class GetMediaStoreDataTask extends AsyncTask< Void , Void , Void>{
         @Override
         protected Void doInBackground(Void... arg0) {
-            ArrayList<String> changedFileList = getChangedFileList( mContext, mSupportSuffix, mAutoRefreshListener.onGetExistDataList( ) );
-            if( null != changedFileList && changedFileList.size( ) > 0 ){
-                mAutoRefreshListener.onDataRefresh( changedFileList );
+            ArrayList<String> supportFileList = getSupportFileList( mContext, mSupportSuffix );
+            if( null != supportFileList && supportFileList.size( ) > 0 ){
+                mAutoRefreshListener.onDataRefresh( supportFileList );
             }
             mTimerWorking = false;
             
@@ -266,14 +237,81 @@ public class DataAutoRefresh {
         }
     }
     
+    class SearchFileTimerTask extends java.util.TimerTask{
+        @Override
+        public void run() {
+            new SearchFileTask( ).execute( );
+        }
+    }
+    
+    /**
+     * 全盘扫描文件
+     * 
+     * */
+    class SearchFileTask extends AsyncTask< Void , Void , Void>{
+        @Override
+        protected Void doInBackground(Void... arg0) {
+            ArrayList<String> supportFileList = searchFile( mSupportSuffix );
+            if( null != supportFileList && supportFileList.size( ) > 0 ){
+                mAutoRefreshListener.onDataRefresh( supportFileList );
+            }
+            mTimerWorking = false;
+            
+            return null;
+        }
+    }
+    
+    /**
+     * 全盘扫描文件
+     * 
+     * */
+    private ArrayList<String> searchFile( String[] searchFileSuffix ){
+        ArrayList<String> filePathList = new ArrayList<String>( );
+        
+        File flashFile = new File(Environment.getExternalStorageDirectory( ).toString( ) + "/");
+        searchFile(filePathList, searchFileSuffix, flashFile);
+        File sdFile = new File(Environment.getExternalFlashStorageDirectory( ).toString( ) + "/");
+        if (null != sdFile) {
+            searchFile(filePathList, searchFileSuffix, sdFile);
+        }
+        
+        return filePathList;
+    }
+    
+    /**
+     * 文件检索核心方法
+     * 
+     * */
+    private void searchFile(ArrayList<String> filePathList, String[] keywords, File filepath) {
+        // 判断SD卡是否存在
+        if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
+            File[] files = filepath.listFiles();
+            if (null != files && files.length > 0) {
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        // 如果目录可读就执行（一定要加，不然会挂掉）
+                        if (file.canRead()) {
+                            searchFile(filePathList, keywords, file); // 如果是目录，递归查找
+                        }
+                    } else {
+                        // 判断是文件，则进行文件名判断
+                        for( String keyword : keywords ){
+                            if (file.getName().indexOf(keyword) > -1 || file.getName().indexOf( keyword.toUpperCase()) > -1) {
+                                filePathList.add(file.getPath());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     /**
      * 模块刷新接口
      * 
      * */
     public interface OnAutoRefreshListener{
-        public ArrayList<String> onGetExistDataList( ); // 得到模块已经存在的数据列表
-        public void onDataRefresh( ArrayList<String> dataList );// 将新增的数据添加到模块
-        public void onDataScan( );//全盘扫描数据
+        public void onDataRefresh( ArrayList<String> fileList );// 将新增的数据添加到模块
     }
     
     private static final int CHECK_FILE_TIME_LEN = 5 * 1000;// 检查媒体库时间间隔
@@ -286,4 +324,5 @@ public class DataAutoRefresh {
     private MediaStoreChangeObserver mMediaStoreChangeObserver = null;
     private OnAutoRefreshListener mAutoRefreshListener = null;
     private Timer mCheckFileTimer = null;
+    private Timer mSearchFileTimer = null;
 }
